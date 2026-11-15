@@ -76,7 +76,7 @@ let dirty={};try{dirty=JSON.parse(localStorage.getItem(DIRTY_KEY)||'{}')}catch(e
 let revisions={};try{revisions=JSON.parse(localStorage.getItem(REV_KEY)||'{}')}catch(e){revisions={}}
 function persistSyncState(){localStorage.setItem(DIRTY_KEY,JSON.stringify(dirty));localStorage.setItem(REV_KEY,JSON.stringify(revisions))}
 function markDirty(id){const key=String(id),r=records.find(x=>String(x.id)===key);if(!r)return;const old=dirty[key];dirty[key]={record:JSON.parse(JSON.stringify(r)),deleted:false,baseRevision:old?old.baseRevision:Number(revisions[key]||0),conflict:false};persistSyncState()}
-function markDeleted(id){const key=String(id),old=dirty[key];dirty[key]={record:null,deleted:true,baseRevision:old?old.baseRevision:Number(revisions[key]||0),conflict:false};persistSyncState()}
+function markDeleted(id){const key=String(id),old=dirty[key],r=records.find(x=>String(x.id)===key);dirty[key]={record:r?JSON.parse(JSON.stringify(r)):(old?old.record:null),deleted:true,baseRevision:old?old.baseRevision:Number(revisions[key]||0),conflict:false};persistSyncState()}
 try{session=JSON.parse(localStorage.getItem(SESSION_KEY)||'null')}catch(e){session=null}
 function status(msg){if($('syncStatus'))$('syncStatus').textContent=msg}
 function save(changedId){localStorage.setItem(KEY,JSON.stringify(records));if(changedId!==undefined&&changedId!==null)markDirty(changedId);render();renderCompleted();if(session)syncCloud().catch(e=>status('Sync error: '+e.message))}
