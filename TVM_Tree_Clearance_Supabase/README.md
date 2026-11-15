@@ -1,23 +1,30 @@
 # TVM Tree Clearance Register – Supabase-connected Android project
 
-## Important
-This build adds a shared Supabase sign-in and cloud-backed record table. The same Supabase Auth user can sign in on each authorised phone. Individual entry codes remain an app-level attribution field; they are not individual authenticated identities.
+## Supabase setup
 
-## Supabase setup (do this before installing)
-1. Open your Supabase project SQL Editor.
-2. Run the complete contents of `supabase-schema.sql`.
-3. In Authentication settings, disable public sign-ups after confirming the shared account exists.
-4. On each phone, sign in using the same shared account credentials. Do not put the password or secret/service-role key into source code.
-5. Keep the publishable key in the client; never embed a `sb_secret_...` key in the APK.
+1. Confirm the shared Supabase Auth account already exists.
+2. Open the Supabase project SQL Editor.
+3. Run the original `supabase-schema.sql` only if the table and authenticated-user RLS policies have not already been created.
+4. Run the complete `supabase-safe-sync-migration.sql` once. It adds revision and deletion-marker columns and the compare-and-save RPC used by the updated app.
+5. Keep public sign-ups disabled. The same shared account is used on the authorised phones.
+6. Keep only the Supabase project URL and publishable key in the Android client. Never embed a secret/service-role key.
 
-## Build
-Open this folder in Android Studio and build `app` > `assembleDebug`, or use Gradle 8.7 with JDK 17 and Android SDK 35. APK output: `app/build/outputs/apk/debug/app-debug.apk`.
+## Updated sync behaviour
 
-## Sync behaviour and limitations
-- The app uploads records to Supabase and polls for shared changes approximately every 15 seconds while signed in; use Sync now for an immediate refresh.
-- Existing local records are uploaded automatically only if the cloud table is empty on the first login. If the cloud already contains records, cloud data is treated as authoritative. Export/back up any important local-only records before rollout.
-- The app stores its Supabase session in WebView local storage. Sign out on shared/public phones when no longer authorised.
-- This first cloud build uses whole-record upserts. Avoid editing the same tower location simultaneously on multiple phones; a later revision should implement conflict-safe per-tree updates and audit logging.
-- Entry codes and CSV download code are client-side controls and are not a substitute for database security. Supabase RLS restricts table access to authenticated users.
-- No live WebSocket subscription is included; changes appear on other phones on the next polling cycle.
-- Test using two phones and non-sensitive sample data before operational deployment. Obtain organisation approval before storing transmission-line or other critical-infrastructure data in an external cloud service.
+- Local edits are saved immediately on the phone and queued for cloud upload.
+- Queued changes retry when connectivity returns and during periodic sync.
+- Each cloud write uses a revision check. A stale write is rejected instead of silently overwriting a newer cloud version.
+- Cloud deletions use tombstones so another phone does not resurrect a deleted record.
+- If two phones edit the same record from the same revision, the later write is not silently accepted. The local copy is preserved and the sync status reports a conflict. This version does not yet provide a screen to merge conflicting edits; resolve those cases before relying on the register operationally.
+- Cloud updates are polled approximately every 15 seconds while signed in. Use Sync now for an immediate attempt.
+- The same shared account means all authenticated phones have the same database permissions. Entry codes are attribution fields, not separate user identities.
+
+## Build and test
+
+Do not distribute the APK until the migration is applied and two-device tests pass. Test with sample records: create a record on phone A and confirm it appears on phone B; update a tree status and confirm it synchronises; take one phone offline, create a record, reconnect, and confirm it uploads; test deletion markers; and test simultaneous edits to confirm a conflict is reported rather than overwritten.
+
+Open this folder in Android Studio. Build with JDK 17 and Android SDK 35. APK output after a successful build: `app/build/outputs/apk/debug/app-debug.apk`.
+
+## Security note
+
+The app uses a shared Supabase login and client-side entry/download codes. Anyone with the shared login can access the shared register. Do not store sensitive infrastructure data in an external cloud service without the appropriate organisational authorisation and security review.
