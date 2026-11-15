@@ -70,10 +70,16 @@ const $=id=>document.getElementById(id);
 const SUPABASE_URL='https://yhagmxprlqcyzjdfqjui.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY='sb_publishable_y-SsRO2rnf7utqPzRWFWpg_iEiMDfzh';
 const SESSION_KEY='tlm_supabase_session_v1';
-let session=null, cloudIds=new Set(), syncBusy=false, lastCloudPull=0;
+let session=null, syncBusy=false, lastCloudPull=0;
+const DIRTY_KEY='tlm_tree_dirty_v2', REV_KEY='tlm_tree_revisions_v2';
+let dirty={};try{dirty=JSON.parse(localStorage.getItem(DIRTY_KEY)||'{}')}catch(e){dirty={}}
+let revisions={};try{revisions=JSON.parse(localStorage.getItem(REV_KEY)||'{}')}catch(e){revisions={}}
+function persistSyncState(){localStorage.setItem(DIRTY_KEY,JSON.stringify(dirty));localStorage.setItem(REV_KEY,JSON.stringify(revisions))}
+function markDirty(id){const key=String(id),r=records.find(x=>String(x.id)===key);if(!r)return;const old=dirty[key];dirty[key]={record:JSON.parse(JSON.stringify(r)),deleted:false,baseRevision:old?old.baseRevision:Number(revisions[key]||0),conflict:false};persistSyncState()}
+function markDeleted(id){const key=String(id),old=dirty[key];dirty[key]={record:null,deleted:true,baseRevision:old?old.baseRevision:Number(revisions[key]||0),conflict:false};persistSyncState()}
 try{session=JSON.parse(localStorage.getItem(SESSION_KEY)||'null')}catch(e){session=null}
 function status(msg){if($('syncStatus'))$('syncStatus').textContent=msg}
-function save(){localStorage.setItem(KEY,JSON.stringify(records));render();if(session)syncCloud().catch(e=>status('Sync error: '+e.message))}
+function save(changedId){localStorage.setItem(KEY,JSON.stringify(records));if(changedId!==undefined&&changedId!==null)markDirty(changedId);render();renderCompleted();if(session)syncCloud().catch(e=>status('Sync error: '+e.message))}
 async function api(path,options={}){
  const headers=Object.assign({'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},options.headers||{});
  if(session?.access_token)headers.Authorization='Bearer '+session.access_token;
@@ -83,11 +89,13 @@ async function api(path,options={}){
 async function refreshSession(){if(!session?.refresh_token)return false;const data=await api('/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{},body:JSON.stringify({refresh_token:session.refresh_token})});session={...data,expires_at:Date.now()+Number(data.expires_in||3600)*1000};localStorage.setItem(SESSION_KEY,JSON.stringify(session));return true}
 async function ensureSession(){if(!session)return false;if(session.expires_at&&Date.now()>session.expires_at-60000){try{return await refreshSession()}catch(e){session=null;localStorage.removeItem(SESSION_KEY);return false}}return true}
 async function signIn(){const email=$('loginEmail').value.trim(),password=$('loginPassword').value;if(!email||!password){$('authMsg').textContent='Enter the shared account email and password.';return} $('loginBtn').disabled=true;$('authMsg').textContent='Signing in…';try{const data=await api('/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify({email,password})});session={...data,expires_at:Date.now()+Number(data.expires_in||3600)*1000};localStorage.setItem(SESSION_KEY,JSON.stringify(session));$('loginPassword').value='';await startCloudApp()}catch(e){$('authMsg').textContent='Sign-in failed. Check the shared login and Supabase Auth settings.'}finally{$('loginBtn').disabled=false}}
-async function loadCloud(){const rows=await api('/rest/v1/tree_clearance_records?select=id,record,updated_at&order=updated_at.asc');cloudIds=new Set(rows.map(x=>x.id));return rows.map(x=>x.record)}
-async function syncCloud(){if(!session||syncBusy)return;syncBusy=true;try{await ensureSession();if(!session)throw new Error('Please sign in again');status('Synchronising…');const payload=records.map(r=>({id:String(r.id),record:r,updated_at:new Date().toISOString()}));if(payload.length)await api('/rest/v1/tree_clearance_records?on_conflict=id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(payload)});const current=new Set(records.map(r=>String(r.id)));const removed=[...cloudIds].filter(id=>!current.has(String(id)));if(removed.length)await api('/rest/v1/tree_clearance_records?id=in.('+removed.map(encodeURIComponent).join(',')+')',{method:'DELETE',headers:{Prefer:'return=minimal'}});cloudIds=current;lastCloudPull=Date.now();status('Cloud sync complete · '+new Date().toLocaleTimeString());}finally{syncBusy=false}}
-async function pullCloud(){if(!session||syncBusy)return;try{await ensureSession();if(!session)return;const remote=await loadCloud();records=remote;localStorage.setItem(KEY,JSON.stringify(records));lastCloudPull=Date.now();render();renderCompleted();status('Synced with shared register · '+new Date().toLocaleTimeString())}catch(e){status('Could not refresh cloud data: '+e.message)}}
-async function startCloudApp(){ $('authPanel').classList.add('hidden');$('appMain').classList.remove('hidden');setupSpecies();try{const localRecords=records.slice();const remote=await loadCloud();const merged=new Map(remote.map(r=>[String(r.id),r]));localRecords.forEach(r=>{if(!merged.has(String(r.id)))merged.set(String(r.id),r)});records=[...merged.values()];localStorage.setItem(KEY,JSON.stringify(records));await syncCloud();render();renderCompleted();status('Connected to shared register · '+new Date().toLocaleTimeString());}catch(e){status('Cloud connection failed: '+e.message)} }
-async function manualSync(){await pullCloud()}
+async function loadCloud(){return await api('/rest/v1/tree_clearance_records?select=id,record,revision,deleted,updated_at&order=updated_at.asc')}
+function mergeRemote(rows){const byId=new Map(records.map(r=>[String(r.id),r]));for(const row of rows){const id=String(row.id);revisions[id]=Number(row.revision||0);if(dirty[id]){if(Number(row.revision||0)!==Number(dirty[id].baseRevision||0))dirty[id].conflict=true;continue}if(row.deleted){byId.delete(id);continue}if(row.record)byId.set(id,row.record)}records=[...byId.values()];persistSyncState();localStorage.setItem(KEY,JSON.stringify(records))}
+async function pushDirty(){for(const id of Object.keys(dirty)){const item=dirty[id];if(item.conflict)continue;const result=await api('/rest/v1/rpc/save_tree_clearance_record',{method:'POST',body:JSON.stringify({p_id:id,p_record:item.record,p_expected_revision:Number(item.baseRevision||0),p_deleted:!!item.deleted})});if(result&&result.ok){revisions[id]=Number(result.revision);delete dirty[id];if(item.deleted)records=records.filter(r=>String(r.id)!==id)}else{dirty[id].conflict=true;dirty[id].serverRevision=Number(result?.revision||0)}}persistSyncState();localStorage.setItem(KEY,JSON.stringify(records))}
+async function syncCloud(){if(!session||syncBusy)return;syncBusy=true;try{await ensureSession();if(!session)throw new Error('Please sign in again');status('Synchronising…');await pushDirty();const rows=await loadCloud();mergeRemote(rows);const conflicts=Object.keys(dirty).filter(id=>dirty[id].conflict).length;lastCloudPull=Date.now();render();renderCompleted();status(conflicts?'Sync conflict on '+conflicts+' record(s) — local changes preserved':'Cloud sync complete · '+new Date().toLocaleTimeString())}finally{syncBusy=false}}
+async function pullCloud(){if(!session||syncBusy)return;try{await syncCloud()}catch(e){status('Could not refresh cloud data: '+e.message)}}
+async function startCloudApp(){ $('authPanel').classList.add('hidden');$('appMain').classList.remove('hidden');setupSpecies();try{const localRecords=records.slice();const rows=await loadCloud();const cloudIds=new Set(rows.map(x=>String(x.id)));for(const r of localRecords){const id=String(r.id);if(!cloudIds.has(id)&&!dirty[id])markDirty(id)}mergeRemote(rows);await syncCloud();render();renderCompleted()}catch(e){status('Cloud connection failed: '+e.message)} }
+async function manualSync(){await syncCloud()}
 function signOut(){session=null;localStorage.removeItem(SESSION_KEY);$('appMain').classList.add('hidden');$('authPanel').classList.remove('hidden');status('Signed out')}
 
 function dateOnly(d=new Date()){return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10)}
@@ -104,8 +112,8 @@ function clearCompleted(){
  let p=prompt('Enter access code to clear all completed records');
  if(p!=='0007'){if(p!==null)alert('Access denied');return}
  if(!confirm('Permanently delete all '+done.length+' completed location(s)? This cannot be undone.'))return;
- records=records.filter(r=>!isComplete(r));
- save();renderCompleted();alert('Completed records cleared.');
+ done.forEach(r=>markDeleted(r.id));records=records.filter(r=>!isComplete(r));
+ localStorage.setItem(KEY,JSON.stringify(records));render();renderCompleted();if(session)syncCloud().catch(e=>status('Sync error: '+e.message));alert('Completed records marked for deletion and synchronised when online.');
 }
 function setupSpecies(){$('speciesList').innerHTML=SPECIES.map((s,i)=>`<div class="species"><label style="margin:0;font-weight:500"><input type="checkbox" id="sp${i}" style="width:20px;vertical-align:middle"> ${s}</label><input type="number" min="1" value="1" id="qty${i}" aria-label="${s} quantity"></div>`).join('')}
 function saveEntry(){
@@ -125,7 +133,7 @@ function card(r,completed=false){
  let list=div.querySelector('#trees-'+r.id);
  r.trees.forEach((t,i)=>{let row=document.createElement('div');row.className='tree';
  let checked=t.cleared?'checked':'';row.innerHTML=`<input type="checkbox" ${checked} ${completed?'disabled':''} aria-label="Mark ${esc(t.species)} cleared"><div style="flex:1"><b>${esc(t.species)}</b> · Qty ${t.quantity}<div class="small">${t.cleared?'Cleared: '+new Date(t.clearedAt).toLocaleString():'Pending clearance'}</div></div>${t.cleared?'<span class="done">✓</span>':''}`;
- let cb=row.querySelector('input');cb.addEventListener('change',()=>{t.cleared=cb.checked;t.clearedAt=cb.checked?stamp():null;r.completedAt=isComplete(r)?stamp():null;save()});list.appendChild(row)});
+ let cb=row.querySelector('input');cb.addEventListener('change',()=>{t.cleared=cb.checked;t.clearedAt=cb.checked?stamp():null;r.completedAt=isComplete(r)?stamp():null;save(r.id)});list.appendChild(row)});
  if(completed){let foot=document.createElement('div');foot.className='small';foot.style.marginTop='8px';foot.textContent='Location completed: '+new Date(r.completedAt).toLocaleString();div.appendChild(foot)}
  return div;
 }
@@ -155,5 +163,6 @@ function exportCsv(which){
 }
 setupSpecies();render();
 (async()=>{if(await ensureSession()){await startCloudApp()}else{$('authPanel').classList.remove('hidden');$('appMain').classList.add('hidden')}})();
-setInterval(()=>{if(session && Date.now()-lastCloudPull>15000)pullCloud()},15000);
+window.addEventListener('online',()=>{if(session)syncCloud().catch(e=>status('Sync error: '+e.message))});
+setInterval(()=>{if(session && Date.now()-lastCloudPull>15000)syncCloud().catch(e=>status('Sync error: '+e.message))},15000);
 </script></body></html>
