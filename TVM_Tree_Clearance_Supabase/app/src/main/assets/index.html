@@ -112,8 +112,8 @@ function saveEntry(){
  let from=$('from').value.trim(),to=$('to').value.trim(),days=Number($('days').value);
  let trees=SPECIES.map((s,i)=>({species:s,quantity:Math.max(1,Number($('qty'+i).value)||1),cleared:$('sp'+i).checked?false:null,clearedAt:null})).filter(t=>t.cleared!==null);
  if(!from||!to||!Number.isInteger(days)||days<1||!trees.length){$('entryMsg').textContent='Enter tower range, criticality days and select at least one tree species.';return}
- let now=stamp();records.push({id:String(Date.now()),from,to,criticality:days,inspectionDate:dateOnly(),createdAt:now,personEntered:window.currentEntryCode||'Unknown',trees,completedAt:null});
- save();$('from').value='';$('to').value='';$('days').value='';SPECIES.forEach((s,i)=>{$('sp'+i).checked=false;$('qty'+i).value=1});$('entryMsg').textContent='Entry saved.';window.currentEntryCode=null;show('active');
+ let now=stamp();const newId=String(Date.now())+'-'+Math.random().toString(36).slice(2,8);records.push({id:newId,from,to,criticality:days,inspectionDate:dateOnly(),createdAt:now,personEntered:window.currentEntryCode||'Unknown',trees,completedAt:null});
+ save(newId);$('from').value='';$('to').value='';$('days').value='';SPECIES.forEach((s,i)=>{$('sp'+i).checked=false;$('qty'+i).value=1});$('entryMsg').textContent='Entry saved.';window.currentEntryCode=null;show('active');
 }
 function card(r,completed=false){
  let left=daysLeft(r),cl=left<3?'red':left<7?'orange':'',label=left<0?Math.abs(left)+' days overdue':left===0?'Due today':left+' days remaining';
